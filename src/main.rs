@@ -17,7 +17,7 @@ struct InputMetadata {
 #[derive(Deserialize, Debug)]
 struct Table {
     name: String,
-    cardinality: u64,
+    cardinality: usize,
 }
 
 // language definition for simplified SQL query execution plans
@@ -38,8 +38,19 @@ pub struct PlanCostFunction<'a> {
     input_metadata: InputMetadata,
 }
 
-fn get_node_cost(egraph: &EGraph<PlanLanguage, ()>, input_metadata: &InputMetadata, id: &Id) -> u64 {
-    let mut cost = 0;
+fn get_symbol_cost(egraph: &EGraph<PlanLanguage, ()>, input_metadata: &InputMetadata, sym: &Symbol) -> usize {
+    let mut cost = 1;
+    for t in input_metadata.tables.iter() {
+        if t.name == sym.to_string() {
+            println!("TABLE = {}", t.name);
+            cost = t.cardinality;
+        }
+    }
+    cost
+}
+
+fn get_node_cost(egraph: &EGraph<PlanLanguage, ()>, input_metadata: &InputMetadata, id: &Id) -> usize {
+    let mut cost = 1;
     for c in egraph.classes() {
         if c.id == *id  {
             for n in c.iter() {
@@ -52,7 +63,6 @@ fn get_node_cost(egraph: &EGraph<PlanLanguage, ()>, input_metadata: &InputMetada
             }
         }
     }
-
     cost
 }
 
@@ -91,8 +101,13 @@ impl<'a> egg::CostFunction<PlanLanguage> for PlanCostFunction<'a> {
                 }
                 cost
             },
+            PlanLanguage::Symbol(sym) => {
+                let cost = get_symbol_cost(&self.egraph, &self.input_metadata, &sym);
+                cost
+            }
             _ => 1,
         };
+        
         let cost = enode.fold(op_cost, |sum, i| sum + costs(i));
         println!("Op_Cost = {}, Cost = {}", op_cost, cost);
         cost
