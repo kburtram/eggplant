@@ -18,20 +18,53 @@ define_language! {
     }
 }
 
-pub struct PlanCostFunction;
-impl egg::CostFunction<PlanLanguage> for PlanCostFunction {
+pub struct PlanCostFunction<'a> {
+    egraph: &'a EGraph<PlanLanguage, ()>,
+}
+
+impl<'a> egg::CostFunction<PlanLanguage> for PlanCostFunction<'a> {
     type Cost = usize;
     fn cost<C>(&mut self, enode: &PlanLanguage, mut costs: C) -> Self::Cost
     where
         C: FnMut(Id) -> Self::Cost,
     {
         let op_cost = match enode {
-            PlanLanguage::MergeJoin(..) => 5,
-            PlanLanguage::HashJoin(..) => 3,
-            PlanLanguage::NestedLoopsJoin(..) => 1,
+            PlanLanguage::MergeJoin(ids) => {
+
+                for c in self.egraph.classes() {
+                    if c.id == ids[0] || c.id == ids[1]  {
+                        for n in c.iter() {
+                            println!("node = {}", n)
+                        }
+                    }
+                }
+                10
+            },
+            PlanLanguage::HashJoin(ids) => {
+                for c in self.egraph.classes() {
+                    if c.id == ids[0] || c.id == ids[1]  {
+                        for n in c.iter() {
+                            println!("node = {}", n)
+                        }
+                    }
+                }
+                9
+            },
+            PlanLanguage::NestedLoopsJoin(ids) => {
+                for c in self.egraph.classes() {
+                    if c.id == ids[0] || c.id == ids[1]  {
+                        for n in c.iter() {
+                            println!("node = {}", n)
+                        }
+                    }
+                }
+                8
+            },
             _ => 1,
         };
-        enode.fold(op_cost, |sum, i| sum + costs(i))
+        let cost = enode.fold(op_cost, |sum, i| sum + costs(i));
+        println!("Op_Cost = {}, Cost = {}", op_cost, cost);
+        cost
     }
 }
 
@@ -40,12 +73,12 @@ fn make_runner(exp: &RecExpr<PlanLanguage>) -> Runner<PlanLanguage, ()> {
     // rewrite rules vector
     let rules = vec![
         // join operations rewrite rules
-        rewrite!("hash-join-merge-join"; "select (hashTable &t1 &t2)"         => "select (mergeTable &t1 &t2)"),
-        // rewrite!("hash-join-nested-loops-join"; "hashJoin"   => "nestedLoopsJoin"),
-        // rewrite!("merge-join-hash-join"; "mergeJoin"        => "hashJoin"),
-        // rewrite!("merge-join-nested-loops-join"; "mergeJoin" => "nestedLoopsJoin"),
-        // rewrite!("nested=-loops-join-merge-join"; "nestedLoopsJoin" => "mergeJoin"),
-        // rewrite!("nested-loops-join-hash-join"; "nestedLoopsJoin" => "hashJoin"),
+        rewrite!("hash-join-merge-join"; "(hashJoin ?a ?b)"         => "(mergeJoin ?a ?b)"),
+        rewrite!("hash-join-nested-loops-join"; "(hashJoin ?a ?b)"   => "(nestedLoopsJoin ?a ?b)"),
+        rewrite!("merge-join-hash-join"; "(mergeJoin ?a ?b)"        => "(hashJoin ?a ?b)"),
+        rewrite!("merge-join-nested-loops-join"; "(mergeJoin ?a ?b)" => "(nestedLoopsJoin ?a ?b)"),
+        rewrite!("nested=-loops-join-merge-join"; "(nestedLoopsJoin ?a ?b)" => "(mergeJoin ?a ?b)"),
+        rewrite!("nested-loops-join-hash-join"; "(nestedLoopsJoin ?a ?b)" => "(hashJoin ?a ?b)"),
     ];
 
     let runner: Runner<PlanLanguage, ()> = Runner::default()
@@ -69,9 +102,9 @@ fn main() {
 
     let runner: Runner<PlanLanguage, ()> = make_runner(&exp);
 
-    // find the best expression using AstSize cost function (TODO create stats based cost function)
     let root = runner.roots[0];
-    let best = Extractor::new(&runner.egraph, PlanCostFunction).find_best(root).1;
+    let cost_func = PlanCostFunction { egraph: &runner.egraph };
+    let best = Extractor::new(&runner.egraph, cost_func).find_best(root).1;
    
     // print the input and output expression
     println!("input   [{}] {}", exp.as_ref().len(), exp);
@@ -80,13 +113,15 @@ fn main() {
 
 #[test]
 fn test_join_operation_rewrites() {    
-    let input_expression = "(select (hashJoin (mergeJoin (scan tbl1 id) (seek tbl3 fid)) (seek tbl2 fid)))";
+    //let input_expression = "(select (hashJoin (mergeJoin (scan tbl1 id) (seek tbl3 fid)) (seek tbl2 fid)))";
+    let input_expression = "(mergeJoin tbl1 tbl2))";
     let exp :RecExpr<PlanLanguage> = input_expression.trim().parse().unwrap();
     let runner: Runner<PlanLanguage, ()> = make_runner(&exp);
     assert!(matches!(runner.stop_reason, Some(StopReason::Saturated)));
 
     let root = runner.roots[0];
-    let best = Extractor::new(&runner.egraph, PlanCostFunction).find_best(root).1;
+    let cost_func = PlanCostFunction { egraph: &runner.egraph };
+    let best = Extractor::new(&runner.egraph, cost_func).find_best(root).1;
    
     // print the input and output expression
     println!("input   [{}] {}", exp.as_ref().len(), exp);
