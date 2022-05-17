@@ -1,0 +1,13 @@
+{
+    "expression": "(mergeJoin tbl1 tbl2)",
+    "tables": [ 
+        {
+            "name": "tbl1",
+            "cardinality": 3000
+        },
+        {
+            "name": "tbl2",
+            "cardinality": 2000
+        }
+    ]
+}

@@ -3,7 +3,22 @@
 // Karl Burtram, kburtram@uw.edu
 
 use egg::{*};
+use serde::Deserialize;
+use serde_json;
 use std::env;
+use std::fs;
+
+#[derive(Deserialize, Debug)]
+struct InputMetadata {
+    expression: String,
+    tables: Vec<Table>,    
+}
+
+#[derive(Deserialize, Debug)]
+struct Table {
+    name: String,
+    cardinality: u64,
+}
 
 // language definition for simplified SQL query execution plans
 define_language! {
@@ -20,6 +35,25 @@ define_language! {
 
 pub struct PlanCostFunction<'a> {
     egraph: &'a EGraph<PlanLanguage, ()>,
+    input_metadata: InputMetadata,
+}
+
+fn get_node_cost(egraph: &EGraph<PlanLanguage, ()>, input_metadata: &InputMetadata, id: &Id) -> u64 {
+    let mut cost = 0;
+    for c in egraph.classes() {
+        if c.id == *id  {
+            for n in c.iter() {
+                for t in input_metadata.tables.iter() {
+                    if t.name == n.to_string() {
+                        println!("TABLE = {}", n);
+                        cost = t.cardinality;
+                    }
+                }                
+            }
+        }
+    }
+
+    cost
 }
 
 impl<'a> egg::CostFunction<PlanLanguage> for PlanCostFunction<'a> {
@@ -30,35 +64,32 @@ impl<'a> egg::CostFunction<PlanLanguage> for PlanCostFunction<'a> {
     {
         let op_cost = match enode {
             PlanLanguage::MergeJoin(ids) => {
-
-                for c in self.egraph.classes() {
-                    if c.id == ids[0] || c.id == ids[1]  {
-                        for n in c.iter() {
-                            println!("node = {}", n)
-                        }
-                    }
+                let mut cost = 1000;
+                let cost1 = get_node_cost(&self.egraph, &self.input_metadata, &ids[0]);
+                let cost2 = get_node_cost(&self.egraph, &self.input_metadata, &ids[1]);
+                if cost1 > 50 && cost2 > 50 && cost1 + cost2 > 1000 {
+                    cost = 1
                 }
-                10
+                cost
             },
             PlanLanguage::HashJoin(ids) => {
-                for c in self.egraph.classes() {
-                    if c.id == ids[0] || c.id == ids[1]  {
-                        for n in c.iter() {
-                            println!("node = {}", n)
-                        }
-                    }
+                let mut cost = 1100;
+                let cost1 = get_node_cost(&self.egraph, &self.input_metadata, &ids[0]);
+                let cost2 = get_node_cost(&self.egraph, &self.input_metadata, &ids[1]);
+                println!("Hash costs 1={}, 2={}", cost1, cost2);
+                if (cost1 < 50 || cost2 < 50) && cost1 + cost2 > 1000  {
+                    cost = 2
                 }
-                9
+                cost
             },
             PlanLanguage::NestedLoopsJoin(ids) => {
-                for c in self.egraph.classes() {
-                    if c.id == ids[0] || c.id == ids[1]  {
-                        for n in c.iter() {
-                            println!("node = {}", n)
-                        }
-                    }
+                let mut cost = 1200;
+                let cost1 = get_node_cost(&self.egraph, &self.input_metadata, &ids[0]);
+                let cost2 = get_node_cost(&self.egraph, &self.input_metadata, &ids[1]);
+                if cost1 + cost2 <= 1000 {
+                    cost = 3
                 }
-                8
+                cost
             },
             _ => 1,
         };
@@ -94,16 +125,29 @@ fn main() {
 
     // read the input string from the command-line
     let args: Vec<String> = env::args().collect();
-    let input_expression = &args[1]; // e.g. "(select (hashJoin (scan tbl1 id)  (seek tbl2 fid)))" 
-    //  (select (hashJoin (nestedLoopsJoin (scan tbl1 id) (seek tbl3 fid)) (seek tbl2 fid)))
 
+    if args.len() < 2 {
+        println!("Usage: eggplant input_file_path");
+        return
+    }
+
+    let input_file = &args[1];
+    let file_contents = fs::read_to_string(input_file)
+        .expect("Could not read input file");
+    
+    let input_metadata = serde_json::from_str::<InputMetadata>(&file_contents).unwrap();
+    println!("{:#?}", input_metadata);
+
+    // (select (hashJoin (scan tbl1 id)  (seek tbl2 fid)))
+    // (select (hashJoin (nestedLoopsJoin (scan tbl1 id) (seek tbl3 fid)) (seek tbl2 fid)))
+    let input_expression = input_metadata.expression.to_string(); 
+    
     // parse the input expression and create a runner object using rewrite rules
     let exp :RecExpr<PlanLanguage> = input_expression.trim().parse().unwrap();
-
     let runner: Runner<PlanLanguage, ()> = make_runner(&exp);
 
     let root = runner.roots[0];
-    let cost_func = PlanCostFunction { egraph: &runner.egraph };
+    let cost_func = PlanCostFunction { egraph: &runner.egraph, input_metadata: input_metadata };
     let best = Extractor::new(&runner.egraph, cost_func).find_best(root).1;
    
     // print the input and output expression
@@ -112,15 +156,31 @@ fn main() {
 }
 
 #[test]
-fn test_join_operation_rewrites() {    
+fn test_join_operation_rewrites() {
+    let input_metadata_json = r#"{
+        "expression": "(mergeJoin tbl1 tbl2)",
+        "tables": [ 
+            {
+                "name": "tbl1",
+                "cardinality": 3
+            },
+            {
+                "name": "tbl2",
+                "cardinality": 20
+            }
+        ]
+    }"#;
+    
+    let input_metadata = serde_json::from_str::<InputMetadata>(&input_metadata_json).unwrap();
+
     //let input_expression = "(select (hashJoin (mergeJoin (scan tbl1 id) (seek tbl3 fid)) (seek tbl2 fid)))";
-    let input_expression = "(mergeJoin tbl1 tbl2))";
+    let input_expression = input_metadata.expression.to_string();
     let exp :RecExpr<PlanLanguage> = input_expression.trim().parse().unwrap();
     let runner: Runner<PlanLanguage, ()> = make_runner(&exp);
     assert!(matches!(runner.stop_reason, Some(StopReason::Saturated)));
 
     let root = runner.roots[0];
-    let cost_func = PlanCostFunction { egraph: &runner.egraph };
+    let cost_func = PlanCostFunction { egraph: &runner.egraph, input_metadata: input_metadata };
     let best = Extractor::new(&runner.egraph, cost_func).find_best(root).1;
    
     // print the input and output expression
