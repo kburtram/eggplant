@@ -8,13 +8,61 @@ use serde_json;
 use std::env;
 use std::fs;
 
-#[derive(Deserialize, Debug)]
+// aliases for EGraph and Runner types with template parameters
+type EPlanGraph = egg::EGraph<PlanLanguage, PlanAnalysis>;
+type EPlanRunner = egg::Runner<PlanLanguage, PlanAnalysis>;
+
+static mut GLOBAL_METADATA: Option<InputMetadata> = None;
+
+#[derive(Clone)]
+struct PlanAnalysis {
+    input_metadata: InputMetadata
+}
+
+#[derive(Debug)]
+struct Data {
+    // free: HashSet<Id>,
+    // constant: Option<(Lambda, PatternAst<Lambda>)>,
+    cardinality: usize
+}
+
+impl Analysis<PlanLanguage> for PlanAnalysis {
+    type Data = Data;
+    fn merge(&mut self, to: &mut Data, from: Data) -> DidMerge {
+        println!("analysis merge");
+        DidMerge(false, false)   
+    }
+
+    fn make(egraph: &EPlanGraph, enode: &PlanLanguage) -> Data {
+        println!("analysis make -> {}", enode);
+
+        let table_name = match enode {            
+            PlanLanguage::Symbol(sym) => {
+                Some(sym.to_string())
+            }
+            _ => None,
+        };
+
+        let mut cardinality = 1;
+        if table_name.is_some() {
+            let table = global_get_table(table_name.unwrap());
+            cardinality = table.unwrap().cardinality;            
+        }
+        Data { cardinality }
+    }
+
+    fn modify(egraph: &mut EPlanGraph, id: Id) {
+        println!("analysis modify  --> {}", id);
+    }
+}
+
+#[derive(Deserialize, Debug, Clone)]
 struct InputMetadata {
     expression: String,
     tables: Vec<Table>,    
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 struct Table {
     name: String,
     cardinality: usize,
@@ -34,37 +82,63 @@ define_language! {
 }
 
 pub struct PlanCostFunction<'a> {
-    egraph: &'a EGraph<PlanLanguage, ()>,
+    egraph: &'a EPlanGraph,
     input_metadata: InputMetadata,
 }
 
-fn get_symbol_cost(egraph: &EGraph<PlanLanguage, ()>, input_metadata: &InputMetadata, sym: &Symbol) -> usize {
-    let mut cost = 1;
-    for t in input_metadata.tables.iter() {
-        if t.name == sym.to_string() {
-            println!("TABLE = {}", t.name);
-            cost = t.cardinality;
-        }
-    }
-    cost
-}
-
-fn get_node_cost(egraph: &EGraph<PlanLanguage, ()>, input_metadata: &InputMetadata, id: &Id) -> usize {
-    let mut cost = 1;
-    for c in egraph.classes() {
-        if c.id == *id  {
-            for n in c.iter() {
-                for t in input_metadata.tables.iter() {
-                    if t.name == n.to_string() {
-                        println!("TABLE = {}", n);
-                        cost = t.cardinality;
-                    }
-                }                
+fn global_get_table(table_name: String) -> Option<Table> {
+    unsafe {
+        if GLOBAL_METADATA.is_some() {
+            let metadata: &InputMetadata = GLOBAL_METADATA.as_ref().unwrap();
+            for t in metadata.tables.iter() {
+                if t.name == table_name {
+                    return Some(t.clone());
+                }
             }
         }
     }
-    cost
+    None
 }
+
+fn get_table(input_metadata: &InputMetadata, table_name: String) -> Option<&Table> {
+    for t in input_metadata.tables.iter() {
+        if t.name == table_name {
+            return Some(t);
+        }
+    }
+    None
+}
+
+fn get_symbol_cost(input_metadata: &InputMetadata, sym: &Symbol) -> usize {
+    println!("symcost = {}", sym.to_string());    
+    let table = get_table(input_metadata, sym.to_string());
+    if table.is_some() {
+        return table.unwrap().cardinality;
+    }
+    1
+}
+
+// fn get_node_cost(egraph: &EPlanGraph, input_metadata: &InputMetadata, id: &Id) -> usize {
+//     println!("nodecost = {}", *id);
+//     let mut cost = 1;
+//     for c in egraph.classes() {
+//         if c.id == *id  {
+//             for n in c.iter() {
+//                 for t in input_metadata.tables.iter() {
+//                     if t.name == n.to_string() {
+//                         println!("TABLE = {}", n);
+//                         cost = t.cardinality;
+//                     }
+//                 }                
+//             }
+//         }
+//     }
+
+//     let node = &egraph[*id];
+//     //node.data.cardinality = global_get_table
+//     println!("node-->{:#?}", node);
+//     cost
+// }
 
 impl<'a> egg::CostFunction<PlanLanguage> for PlanCostFunction<'a> {
     type Cost = usize;
@@ -72,42 +146,44 @@ impl<'a> egg::CostFunction<PlanLanguage> for PlanCostFunction<'a> {
     where
         C: FnMut(Id) -> Self::Cost,
     {
-        let op_cost = match enode {
-            PlanLanguage::MergeJoin(ids) => {
+        let op_cost = match enode {            
+            PlanLanguage::MergeJoin([table1_id, table2_id]) => {
+                println!("---merge");
                 let mut cost = 1000;
-                let cost1 = get_node_cost(&self.egraph, &self.input_metadata, &ids[0]);
-                let cost2 = get_node_cost(&self.egraph, &self.input_metadata, &ids[1]);
-                if cost1 > 50 && cost2 > 50 && cost1 + cost2 > 1000 {
+                let t1_cardinality = self.egraph[*table1_id].data.cardinality;
+                let t2_cardinality = self.egraph[*table2_id].data.cardinality;
+                if t1_cardinality > 50 && t2_cardinality > 50 && t1_cardinality + t2_cardinality > 1000 {
                     cost = 1
                 }
                 cost
             },
-            PlanLanguage::HashJoin(ids) => {
+            PlanLanguage::HashJoin([table1_id, table2_id]) => {
+                println!("---hash");
                 let mut cost = 1100;
-                let cost1 = get_node_cost(&self.egraph, &self.input_metadata, &ids[0]);
-                let cost2 = get_node_cost(&self.egraph, &self.input_metadata, &ids[1]);
-                println!("Hash costs 1={}, 2={}", cost1, cost2);
-                if (cost1 < 50 || cost2 < 50) && cost1 + cost2 > 1000  {
+                let t1_cardinality = self.egraph[*table1_id].data.cardinality;
+                let t2_cardinality = self.egraph[*table2_id].data.cardinality;
+                if (t1_cardinality < 50 || t2_cardinality < 50) && t1_cardinality + t2_cardinality > 1000 {
                     cost = 2
                 }
                 cost
-            },
-            PlanLanguage::NestedLoopsJoin(ids) => {
+            },            
+            PlanLanguage::NestedLoopsJoin([table1_id, table2_id]) => {
+                println!("---nested");
                 let mut cost = 1200;
-                let cost1 = get_node_cost(&self.egraph, &self.input_metadata, &ids[0]);
-                let cost2 = get_node_cost(&self.egraph, &self.input_metadata, &ids[1]);
-                if cost1 + cost2 <= 1000 {
+                let t1_cardinality = self.egraph[*table1_id].data.cardinality;
+                let t2_cardinality = self.egraph[*table2_id].data.cardinality;
+                if t1_cardinality + t2_cardinality <= 1000 {
                     cost = 3
                 }
-                cost
+                cost                
             },
             PlanLanguage::Symbol(sym) => {
-                let cost = get_symbol_cost(&self.egraph, &self.input_metadata, &sym);
+                let cost = get_symbol_cost(&self.input_metadata, &sym);
                 cost
             }
             _ => 1,
         };
-        
+       
         let cost = enode.fold(op_cost, |sum, i| sum + costs(i));
         println!("Op_Cost = {}, Cost = {}", op_cost, cost);
         cost
@@ -115,7 +191,7 @@ impl<'a> egg::CostFunction<PlanLanguage> for PlanCostFunction<'a> {
 }
 
 #[rustfmt::skip]
-fn make_runner(exp: &RecExpr<PlanLanguage>) -> Runner<PlanLanguage, ()> {
+fn make_runner(exp: &RecExpr<PlanLanguage>, input_metadata: &InputMetadata) -> EPlanRunner {
     // rewrite rules vector
     let rules = vec![
         // join operations rewrite rules
@@ -127,7 +203,9 @@ fn make_runner(exp: &RecExpr<PlanLanguage>) -> Runner<PlanLanguage, ()> {
         rewrite!("nested-loops-join-hash-join"; "(nestedLoopsJoin ?a ?b)" => "(hashJoin ?a ?b)"),
     ];
 
-    let runner: Runner<PlanLanguage, ()> = Runner::default()
+    let runner: EPlanRunner = Runner::new(PlanAnalysis {
+            input_metadata: input_metadata.clone(),
+        })
         .with_iter_limit(1000)
         .with_expr(&exp)
         .run(&rules);
@@ -153,13 +231,18 @@ fn main() {
     let input_metadata = serde_json::from_str::<InputMetadata>(&file_contents).unwrap();
     println!("{:#?}", input_metadata);
 
+    unsafe {
+        // store the metadata input global variable to access it later
+        GLOBAL_METADATA = Some(input_metadata.clone());
+    }
+
     // (select (hashJoin (scan tbl1 id)  (seek tbl2 fid)))
     // (select (hashJoin (nestedLoopsJoin (scan tbl1 id) (seek tbl3 fid)) (seek tbl2 fid)))
     let input_expression = input_metadata.expression.to_string(); 
     
     // parse the input expression and create a runner object using rewrite rules
     let exp :RecExpr<PlanLanguage> = input_expression.trim().parse().unwrap();
-    let runner: Runner<PlanLanguage, ()> = make_runner(&exp);
+    let runner: EPlanRunner = make_runner(&exp, &input_metadata);
 
     let root = runner.roots[0];
     let cost_func = PlanCostFunction { egraph: &runner.egraph, input_metadata: input_metadata };
@@ -185,13 +268,11 @@ fn test_join_operation_rewrites() {
             }
         ]
     }"#;
-    
-    let input_metadata = serde_json::from_str::<InputMetadata>(&input_metadata_json).unwrap();
 
-    //let input_expression = "(select (hashJoin (mergeJoin (scan tbl1 id) (seek tbl3 fid)) (seek tbl2 fid)))";
+    let input_metadata = serde_json::from_str::<InputMetadata>(&input_metadata_json).unwrap();
     let input_expression = input_metadata.expression.to_string();
     let exp :RecExpr<PlanLanguage> = input_expression.trim().parse().unwrap();
-    let runner: Runner<PlanLanguage, ()> = make_runner(&exp);
+    let runner: EPlanRunner = make_runner(&exp, &input_metadata);
     assert!(matches!(runner.stop_reason, Some(StopReason::Saturated)));
 
     let root = runner.roots[0];
