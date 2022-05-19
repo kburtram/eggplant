@@ -1,22 +1,22 @@
 {
-    "expression": "(nestedLoopsJoin (mergeJoin tbl1 tbl2) tbl3)",
+    "expression": "(hashJoin (hashJoin tbl1 tbl2) tbl3)",
     "tables": [ 
         {
             "name": "tbl1",
-            "cardinality": 3000,
-            "rows": 4000,
+            "cardinality": 50,
+            "rows": 1000,
             "index": "primary"
         },
         {
             "name": "tbl2",
             "cardinality": 2000,
-            "rows": 4000,
+            "rows": 3000,
             "index": "foreign"
         },
         {
             "name": "tbl3",
-            "cardinality": 1500,
-            "rows": 2000,
+            "cardinality": 25,
+            "rows": 1000,
             "index": "foreign"
         }
     ]

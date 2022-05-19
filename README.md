@@ -1,4 +1,4 @@
-# Egg-based Plan Optimizer for T-SQL Queries (eggplant)
+# Egg Plan Transformer (eggplant)
 
 <img src="eggplant.png"
      alt="Eggplant"

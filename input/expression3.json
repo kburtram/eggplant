@@ -3,11 +3,15 @@
     "tables": [ 
         {
             "name": "tbl1",
-            "cardinality": 3000
+            "cardinality": 3000,
+            "rows": 5000,
+            "index": "primary"
         },
         {
             "name": "tbl2",
-            "cardinality": 2000
+            "cardinality": 2000,
+            "rows": 5000,
+            "index": "foreign"
         }
     ]
 }
