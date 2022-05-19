@@ -1,5 +1,5 @@
 {
-    "expression": "(hashJoin (hashJoin tbl2 tbl1) tbl3)",
+    "expression": "(hashJoin (hashJoin (scan tbl2) (scan tbl1)) (scan tbl3))",
     "tables": [ 
         {
             "name": "tbl1",

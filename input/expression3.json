@@ -1,5 +1,5 @@
 {
-    "expression": "(mergeJoin tbl1 tbl2)",
+    "expression": "(mergeJoin (scan tbl1) (scan tbl2))",
     "tables": [ 
         {
             "name": "tbl1",

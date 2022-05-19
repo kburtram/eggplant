@@ -1,5 +1,5 @@
 {
-    "expression": "(nestedLoopsJoin (mergeJoin tbl1 tbl2) tbl3)",
+    "expression": "(nestedLoopsJoin (mergeJoin (scan tbl1) (scan tbl2)) (scan tbl3))",
     "tables": [ 
         {
             "name": "tbl1",

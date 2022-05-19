@@ -47,6 +47,19 @@ fn global_get_table(table_name: String) -> Option<Table> {
     None
 }
 
+// language definition for simplified SQL query execution plans
+define_language! {
+    enum PlanLanguage {        
+        "select" = Select([Id; 1]),
+        "hashJoin" = HashJoin([Id; 2]),
+        "mergeJoin" = MergeJoin([Id; 2]),
+        "nestedLoopsJoin" = NestedLoopsJoin([Id; 2]),
+        "scan" = Scan([Id; 1]),
+        "seek" = Seek([Id; 1]),
+        Symbol(Symbol),
+    }
+}
+
 // plan analysis classes
 #[derive(Default, Clone)]
 struct PlanAnalysis;
@@ -55,6 +68,7 @@ struct PlanAnalysis;
 #[derive(Debug)]
 struct Data {
     cardinality: usize,
+    rows: usize,
     is_table: bool,
     index: Option<String>,
     penalty: usize
@@ -66,7 +80,7 @@ fn get_join_cardinality(egraph: &EPlanGraph, lhs_id: &Id, rhs_id: &Id) -> (usize
     let t2_data = &egraph[*rhs_id].data;
 
     let mut scale: f32 = 1.0;
-    if !t1_data.is_table || !t2_data.is_table {
+    if t1_data.index.is_none() || t2_data.index.is_none() {
         scale = 1.1;
     }
 
@@ -88,6 +102,30 @@ fn get_join_cardinality(egraph: &EPlanGraph, lhs_id: &Id, rhs_id: &Id) -> (usize
     ((t1_data.cardinality + t2_data.cardinality), (t1_cardinality + t2_cardinality) as usize)
 }
 
+fn get_scan_cardinality(egraph: &EPlanGraph, table_id: &Id) -> (usize, usize, Option<String>) {
+    let t1_data = &egraph[*table_id].data;
+    let index = t1_data.index.as_ref().unwrap();
+
+    let cardinality_ratio: f32 = t1_data.cardinality as f32 / t1_data.rows as f32;
+    let mut penalty = t1_data.penalty;
+    if cardinality_ratio < 0.2 {
+        penalty += 100000;
+    }
+    (t1_data.cardinality, penalty, Some(index.to_string()))
+}
+
+fn get_seek_cardinality(egraph: &EPlanGraph, table_id: &Id) -> (usize, usize, Option<String>) {
+    let t1_data = &egraph[*table_id].data;
+    let index = t1_data.index.as_ref().unwrap();
+    
+    let cardinality_ratio: f32 = t1_data.cardinality as f32 / t1_data.rows as f32;
+    let mut penalty = t1_data.penalty;
+    if cardinality_ratio > 0.8 {
+        penalty += 100000;
+    }
+    (t1_data.cardinality, penalty, Some(index.to_string()))
+}
+
 impl Analysis<PlanLanguage> for PlanAnalysis {
     type Data = Data;
     fn merge(&mut self, _to: &mut Data, _from: Data) -> DidMerge {
@@ -96,6 +134,7 @@ impl Analysis<PlanLanguage> for PlanAnalysis {
 
     fn make(egraph: &EPlanGraph, enode: &PlanLanguage) -> Data {
         let mut cardinality: usize = 1;
+        let mut rows: usize = 1;        
         let mut penalty: usize = 1;
         let mut is_table: bool = false;
         let mut index: Option<String> = None;
@@ -106,13 +145,8 @@ impl Analysis<PlanLanguage> for PlanAnalysis {
                     let table = tbl.unwrap(); 
                     is_table = true;
                     cardinality = table.cardinality;
-                    index = Some(table.index);
-                    // if index.as_ref().unwrap() == "primary" {
-                    //     penalty = cardinality;
-                    // } else {
-                    //     penalty = cardinality * 2;
-                    // }
-                    
+                    rows = table.rows;
+                    index = Some(table.index);  
                 }              
             },
             PlanLanguage::MergeJoin([table1_id, table2_id]) => {
@@ -124,25 +158,18 @@ impl Analysis<PlanLanguage> for PlanAnalysis {
             PlanLanguage::NestedLoopsJoin([table1_id, table2_id]) => {
                 (cardinality, penalty) = get_join_cardinality(egraph, table1_id, table2_id);
             },
+            PlanLanguage::Scan([table1_id]) => {
+                (cardinality, penalty, index) = get_scan_cardinality(egraph, table1_id);
+            },
+            PlanLanguage::Seek([table1_id]) => {
+                (cardinality, penalty, index) = get_seek_cardinality(egraph, table1_id);
+            },
             _ => { }
         };
-        Data { cardinality, is_table, index, penalty }
+        Data { cardinality, rows, is_table, index, penalty }
     }
 
     fn modify(_egraph: &mut EPlanGraph, _id: Id) {
-    }
-}
-
-// language definition for simplified SQL query execution plans
-define_language! {
-    enum PlanLanguage {        
-        "select" = Select([Id; 1]),
-        "hashJoin" = HashJoin([Id; 2]),
-        "mergeJoin" = MergeJoin([Id; 2]),
-        "nestedLoopsJoin" = NestedLoopsJoin([Id; 2]),
-        "scan" = Scan([Id; 2]),
-        "seek" = Seek([Id; 2]),
-        Symbol(Symbol),
     }
 }
 
@@ -164,7 +191,6 @@ fn get_symbol_cost(sym: &Symbol) -> usize {
 
 // get the costs for the join operations according to join preference rules
 fn get_merge_join_cost(egraph: &EPlanGraph, table1_id: &Id, table2_id: &Id) -> usize {
-    // println!("---merge");
     let mut rank: usize = 700000;
     let t1_data = &egraph[*table1_id].data;
     let t2_data = &egraph[*table2_id].data;
@@ -182,11 +208,11 @@ fn get_merge_join_cost(egraph: &EPlanGraph, table1_id: &Id, table2_id: &Id) -> u
     } else {
         rank += 1;
     }
+    println!("scan-seek penalty1={}, penalty2={}", t1_data.penalty, t2_data.penalty);
     rank + t1_data.penalty + t2_data.penalty    
 }
 
 fn get_hash_join_cost(egraph: &EPlanGraph, table1_id: &Id, table2_id: &Id) -> usize {
-    // println!("---hash");
     let mut rank: usize = 800000;
     let t1_data = &egraph[*table1_id].data;
     let t2_data = &egraph[*table2_id].data;
@@ -204,11 +230,11 @@ fn get_hash_join_cost(egraph: &EPlanGraph, table1_id: &Id, table2_id: &Id) -> us
     } else {
         rank += 1;
     }
+    println!("scan-seek penalty1={}, penalty2={}", t1_data.penalty, t2_data.penalty);
     rank + t1_data.penalty + t2_data.penalty
 }
 
 fn get_nested_loops_join_cost(egraph: &EPlanGraph, table1_id: &Id, table2_id: &Id) -> usize {
-    // println!("---nested");
     let mut rank: usize = 900000;
     let t1_data = &egraph[*table1_id].data;
     let t2_data = &egraph[*table2_id].data;
@@ -224,6 +250,7 @@ fn get_nested_loops_join_cost(egraph: &EPlanGraph, table1_id: &Id, table2_id: &I
     } else {
         rank += 1;
     }
+    println!("scan-seek penalty1={}, penalty2={}", t1_data.penalty, t2_data.penalty);
     rank + t1_data.penalty + t2_data.penalty
 }
 
@@ -240,7 +267,7 @@ impl<'a> egg::CostFunction<PlanLanguage> for PlanCostFunction<'a> {
             PlanLanguage::HashJoin([table1_id, table2_id])
                 => get_hash_join_cost(self.egraph, table1_id, table2_id),           
             PlanLanguage::NestedLoopsJoin([table1_id, table2_id])
-                => get_nested_loops_join_cost(self.egraph, table1_id, table2_id),
+                => get_nested_loops_join_cost(self.egraph, table1_id, table2_id),   
             PlanLanguage::Symbol(sym) => get_symbol_cost(&sym),
             _ => 1,
         };
@@ -259,8 +286,9 @@ fn make_runner(exp: &RecExpr<PlanLanguage>) -> EPlanRunner {
     let rules = vec![
         // join order rewrite rules        
         rewrite!("idx-left"; "(hashJoin ?a ?b)" => "(hashJoin ?b ?a)"),
-
-        rewrite!("hjhj-order-right"; "(hashJoin (hashJoin ?a ?b) ?c)" => "(hashJoin (hashJoin ?a ?c) ?b)"),
+        rewrite!("order-right"; "(hashJoin (hashJoin ?a ?b) ?c)" => "(hashJoin (hashJoin ?a ?c) ?b)"),
+        rewrite!("scan-seek"; "(hashJoin (scan ?a) ?b)" => "(hashJoin (seek ?a) ?b)"),
+        rewrite!("seek-scan"; "(hashJoin (seek ?a) ?b)" => "(hashJoin (scan ?a) ?b)"),
 
         // join operations rewrite rules
         rewrite!("hash-join-merge-join"; "(hashJoin ?a ?b)"         => "(mergeJoin ?a ?b)"),
@@ -328,7 +356,7 @@ fn main() {
 #[test]
 fn test_join_operation_rewrites() {
     let input_metadata_json = r#"{
-        "expression": "(mergeJoin tbl1 tbl2)",
+        "expression": "(mergeJoin (scan tbl1) (scan tbl2))",
         "tables": [ 
             {
                 "name": "tbl1",
@@ -339,7 +367,7 @@ fn test_join_operation_rewrites() {
             {
                 "name": "tbl2",
                 "cardinality": 20,
-                "rows": 1000,
+                "rows": 21,
                 "index": "foreign"
             }
         ]
