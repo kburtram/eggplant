@@ -1,17 +1,19 @@
 {
-    "expression": "(mergeJoin (scan tbl1) (scan tbl2))",
+    "expression": "(select (mergeJoin (scan tbl1) (scan tbl2)))",
     "tables": [ 
         {
             "name": "tbl1",
             "cardinality": 3000,
             "rows": 5000,
-            "index": "primary"
+            "index": "primary",
+            "ordered": true
         },
         {
             "name": "tbl2",
             "cardinality": 2000,
             "rows": 5000,
-            "index": "foreign"
+            "index": "foreign",
+            "ordered": false
         }
     ]
 }

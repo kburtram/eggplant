@@ -29,7 +29,8 @@ struct Table {
     name: String,
     index: String,
     cardinality: usize,
-    rows: usize
+    rows: usize,
+    ordered: bool
 }
 
 // function that looks up the metadata for a table
@@ -70,6 +71,7 @@ struct Data {
     cardinality: usize,
     rows: usize,
     is_table: bool,
+    ordered: bool,
     index: Option<String>,
     penalty: usize
 }
@@ -120,7 +122,7 @@ fn get_seek_cardinality(egraph: &EPlanGraph, table_id: &Id) -> (usize, usize, Op
     
     let cardinality_ratio: f32 = t1_data.cardinality as f32 / t1_data.rows as f32;
     let mut penalty = t1_data.penalty;
-    if cardinality_ratio > 0.8 {
+    if cardinality_ratio >= 0.8 {
         penalty += 100000;
     }
     (t1_data.cardinality, penalty, Some(index.to_string()))
@@ -134,7 +136,8 @@ impl Analysis<PlanLanguage> for PlanAnalysis {
 
     fn make(egraph: &EPlanGraph, enode: &PlanLanguage) -> Data {
         let mut cardinality: usize = 1;
-        let mut rows: usize = 1;        
+        let mut rows: usize = 1;
+        let mut ordered: bool = false;
         let mut penalty: usize = 1;
         let mut is_table: bool = false;
         let mut index: Option<String> = None;
@@ -146,11 +149,13 @@ impl Analysis<PlanLanguage> for PlanAnalysis {
                     is_table = true;
                     cardinality = table.cardinality;
                     rows = table.rows;
+                    ordered = table.ordered;
                     index = Some(table.index);  
                 }              
             },
             PlanLanguage::MergeJoin([table1_id, table2_id]) => {
                 (cardinality, penalty) = get_join_cardinality(egraph, table1_id, table2_id);
+                ordered = true;
             },
             PlanLanguage::HashJoin([table1_id, table2_id]) => {
                 (cardinality, penalty) = get_join_cardinality(egraph, table1_id, table2_id);
@@ -166,7 +171,7 @@ impl Analysis<PlanLanguage> for PlanAnalysis {
             },
             _ => { }
         };
-        Data { cardinality, rows, is_table, index, penalty }
+        Data { cardinality, rows, ordered, is_table, index, penalty }
     }
 
     fn modify(_egraph: &mut EPlanGraph, _id: Id) {
@@ -205,9 +210,8 @@ fn get_merge_join_cost(egraph: &EPlanGraph, table1_id: &Id, table2_id: &Id) -> u
         } else {
             rank += 10000;
         }
-    } else {
-        rank += 1;
-    }
+    } 
+
     println!("scan-seek penalty1={}, penalty2={}", t1_data.penalty, t2_data.penalty);
     rank + t1_data.penalty + t2_data.penalty    
 }
@@ -227,9 +231,12 @@ fn get_hash_join_cost(egraph: &EPlanGraph, table1_id: &Id, table2_id: &Id) -> us
         } else {
             rank += 10000;
         }
-    } else {
-        rank += 1;
     }
+
+    if t1_data.ordered && t2_data.ordered {
+        rank += 5000;
+    }
+
     println!("scan-seek penalty1={}, penalty2={}", t1_data.penalty, t2_data.penalty);
     rank + t1_data.penalty + t2_data.penalty
 }
@@ -247,9 +254,12 @@ fn get_nested_loops_join_cost(egraph: &EPlanGraph, table1_id: &Id, table2_id: &I
         } else {
             rank += 10000;
         }
-    } else {
-        rank += 1;
+    } 
+    
+    if t1_data.ordered && t2_data.ordered {
+        rank += 5000;
     }
+
     println!("scan-seek penalty1={}, penalty2={}", t1_data.penalty, t2_data.penalty);
     rank + t1_data.penalty + t2_data.penalty
 }
@@ -310,7 +320,7 @@ fn make_runner(exp: &RecExpr<PlanLanguage>) -> EPlanRunner {
 // entry point into the plan rewriter application
 fn main() {
     // print the application header
-    println!("Egg-based Plan Optimizer for T-SQL Queries (eggplant)");
+    println!("Egg Plan Transformer (eggplant)");
 
     // read the input string from the command-line
     let args: Vec<String> = env::args().collect();
@@ -390,5 +400,5 @@ fn test_join_operation_rewrites() {
    
     // print the input and output expression
     println!("input   [{}] {}", exp.as_ref().len(), exp);
-    println!("normal  [{}] {}", best.as_ref().len(), best);
+    println!("output  [{}] {}", best.as_ref().len(), best);
 }

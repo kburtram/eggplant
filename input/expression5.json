@@ -1,35 +1,40 @@
 {
-    "expression": "(nestedLoopsJoin (nestedLoopsJoin (mergeJoin (scan tbl1) (scan tbl2)) (scan tbl3)) (hashJoin (scan tbl4) (scan tbl5)))",
+    "expression": "(select (nestedLoopsJoin (nestedLoopsJoin (mergeJoin (scan tbl1) (scan tbl2)) (scan tbl3)) (hashJoin (scan tbl4) (scan tbl5))))",
     "tables": [ 
         {
             "name": "tbl1",
             "cardinality": 3000,
             "rows": 4000,
-            "index": "primary"
+            "index": "primary",
+            "ordered": true
         },
         {
             "name": "tbl2",
             "cardinality": 2000,
             "rows": 3000, 
-            "index": "foreign"
+            "index": "foreign",
+            "ordered": false
         },
         {
             "name": "tbl3",
             "cardinality": 40,
             "rows": 1000,
-            "index": "foreign"
+            "index": "foreign",
+            "ordered": false
         },
         {
             "name": "tbl4",
             "cardinality": 200,
             "rows": 1000,
-            "index": "foreign"
+            "index": "foreign",
+            "ordered": false
         },
         {
             "name": "tbl5",
             "cardinality": 200,
             "rows": 1000,
-            "index": "foreign"
+            "index": "foreign",
+            "ordered": false
         }
     ]
 }

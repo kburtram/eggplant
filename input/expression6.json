@@ -1,23 +1,26 @@
 {
-    "expression": "(hashJoin (hashJoin (scan tbl1) (scan tbl2)) (scan tbl3))",
+    "expression": "(select (hashJoin (hashJoin (scan tbl1) (scan tbl2)) (scan tbl3)))",
     "tables": [ 
         {
             "name": "tbl1",
             "cardinality": 50,
             "rows": 1000,
-            "index": "primary"
+            "index": "primary",
+            "ordered": true
         },
         {
             "name": "tbl2",
             "cardinality": 2000,
             "rows": 3000,
-            "index": "foreign"
+            "index": "foreign",
+            "ordered": false
         },
         {
             "name": "tbl3",
             "cardinality": 25,
             "rows": 1000,
-            "index": "foreign"
+            "index": "foreign",
+            "ordered": false
         }
     ]
 }
