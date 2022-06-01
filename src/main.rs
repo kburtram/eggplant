@@ -5,6 +5,7 @@
 use egg::{*};
 use serde::Deserialize;
 use serde_json;
+use std::cmp;
 use std::env;
 use std::fs;
 
@@ -97,11 +98,8 @@ fn get_join_cardinality(egraph: &EPlanGraph, lhs_id: &Id, rhs_id: &Id) -> (usize
         t2_cardinality *= scale;
     }
 
-    println!("cardinality={}, t1={}, t2={}, scale={}", 
-        (t1_cardinality + t2_cardinality) as usize, 
-        t1_cardinality,  t2_cardinality, scale);
-
-    ((t1_data.cardinality + t2_data.cardinality), (t1_cardinality + t2_cardinality) as usize)
+    let join_cardinality = cmp::max(t1_data.cardinality, t2_data.cardinality);
+    (join_cardinality, (t1_cardinality + t2_cardinality) as usize)
 }
 
 fn get_scan_cardinality(egraph: &EPlanGraph, table_id: &Id) -> (usize, usize, Option<String>) {
@@ -131,6 +129,12 @@ fn get_seek_cardinality(egraph: &EPlanGraph, table_id: &Id) -> (usize, usize, Op
 impl Analysis<PlanLanguage> for PlanAnalysis {
     type Data = Data;
     fn merge(&mut self, _to: &mut Data, _from: Data) -> DidMerge {
+        // to.cardinality = from.cardinality;
+        // to.index = from.index;
+        // to.is_table = from.is_table;
+        // to.ordered = from.ordered;
+        // to.penalty = from.penalty;
+        // to.rows = from.rows;
         DidMerge(false, false)   
     }
 
@@ -140,7 +144,7 @@ impl Analysis<PlanLanguage> for PlanAnalysis {
         let mut ordered: bool = false;
         let mut penalty: usize = 1;
         let mut is_table: bool = false;
-        let mut index: Option<String> = None;
+        let mut index: Option<String> = None;        
         match enode {            
             PlanLanguage::Symbol(sym) => {                 
                 let tbl = global_get_table(sym.to_string());
@@ -171,6 +175,7 @@ impl Analysis<PlanLanguage> for PlanAnalysis {
             },
             _ => { }
         };
+
         Data { cardinality, rows, ordered, is_table, index, penalty }
     }
 
@@ -212,7 +217,7 @@ fn get_merge_join_cost(egraph: &EPlanGraph, table1_id: &Id, table2_id: &Id) -> u
         }
     } 
 
-    println!("scan-seek penalty1={}, penalty2={}", t1_data.penalty, t2_data.penalty);
+    // println!("scan-seek penalty1={}, penalty2={}", t1_data.penalty, t2_data.penalty);
     rank + t1_data.penalty + t2_data.penalty    
 }
 
@@ -237,7 +242,7 @@ fn get_hash_join_cost(egraph: &EPlanGraph, table1_id: &Id, table2_id: &Id) -> us
         rank += 5000;
     }
 
-    println!("scan-seek penalty1={}, penalty2={}", t1_data.penalty, t2_data.penalty);
+    // println!("scan-seek penalty1={}, penalty2={}", t1_data.penalty, t2_data.penalty);
     rank + t1_data.penalty + t2_data.penalty
 }
 
@@ -260,7 +265,7 @@ fn get_nested_loops_join_cost(egraph: &EPlanGraph, table1_id: &Id, table2_id: &I
         rank += 5000;
     }
 
-    println!("scan-seek penalty1={}, penalty2={}", t1_data.penalty, t2_data.penalty);
+    // println!("scan-seek penalty1={}, penalty2={}", t1_data.penalty, t2_data.penalty);
     rank + t1_data.penalty + t2_data.penalty
 }
 
@@ -271,6 +276,8 @@ impl<'a> egg::CostFunction<PlanLanguage> for PlanCostFunction<'a> {
     where
         C: FnMut(Id) -> Self::Cost,
     {
+        //let mut is_select = false;
+
         let op_cost = match enode {            
             PlanLanguage::MergeJoin([table1_id, table2_id])
                 => get_merge_join_cost(self.egraph, table1_id, table2_id),
@@ -279,12 +286,18 @@ impl<'a> egg::CostFunction<PlanLanguage> for PlanCostFunction<'a> {
             PlanLanguage::NestedLoopsJoin([table1_id, table2_id])
                 => get_nested_loops_join_cost(self.egraph, table1_id, table2_id),   
             PlanLanguage::Symbol(sym) => get_symbol_cost(&sym),
+            PlanLanguage::Select(_s) => {
+                //is_select = true;
+                1
+            } ,
             _ => 1,
         };
        
         // sum the node cost with its child nodes
         let cost = enode.fold(op_cost, |sum, i| sum + costs(i));
-        println!("Op_Cost = {c1:>width$}, Total_Cost = {c2:>width$}", c1=op_cost, c2=cost, width=8);
+        // if is_select {
+        //     println!("Op_Cost = {c1:>width$}, Total_Cost = {c2:>width$}", c1=op_cost, c2=cost, width=8);
+        // }
         cost
     }
 }
@@ -317,6 +330,130 @@ fn make_runner(exp: &RecExpr<PlanLanguage>) -> EPlanRunner {
     runner
 }
 
+// fn compute_expression_cost(egraph: &EPlanGraph, exp :&RecExpr<PlanLanguage>) -> (usize, usize) {
+//     let mut cardinality: usize = 0;
+//     let mut penalty: usize = 0;
+//     let mut total_cardinality: usize = 0;
+//     let mut total_penalty: usize = 0;
+//     let mut _index: Option<String> = None;   
+//     // need to update egg to make nodes public for this code to build
+//     for enode in exp.nodes.iter() {       
+//         match enode {            
+//             // PlanLanguage::Symbol(sym) => {                 
+//             //     let tbl = global_get_table(sym.to_string());
+//             //     if tbl.is_some() {
+//             //         let table = tbl.unwrap(); 
+//             //          cardinality = table.cardinality;
+//             //     }              
+//             // },
+//             PlanLanguage::MergeJoin([table1_id, table2_id]) => {
+//                 println!("t1={}, t2={}", table1_id, table2_id);
+//                 (cardinality, penalty) = get_join_cardinality(egraph, table1_id, table2_id);   
+//                 println!("merge-> card={},penalty={}", cardinality, penalty);         
+//             },
+//             PlanLanguage::HashJoin([table1_id, table2_id]) => {
+//                 println!("t1={}, t2={}", table1_id, table2_id);
+//                 (cardinality, penalty) = get_join_cardinality(egraph, table1_id, table2_id);
+//                 println!("hash-> card={},penalty={}", cardinality, penalty);
+//             },            
+//             PlanLanguage::NestedLoopsJoin([table1_id, table2_id]) => {
+//                 println!("t1={}, t2={}", table1_id, table2_id);
+//                 (cardinality, penalty) = get_join_cardinality(egraph, table1_id, table2_id);
+//                 println!("nested-> card={},penalty={}", cardinality, penalty);
+//             },
+//                 // PlanLanguage::Scan([table1_id]) => {
+//                 //     (cardinality, penalty, _index) = get_scan_cardinality(egraph, table1_id);
+//                 // },
+//                 // PlanLanguage::Seek([table1_id]) => {
+//                 //     (cardinality, penalty, _index) = get_seek_cardinality(egraph, table1_id);
+//                 // },
+//             _ => { }
+//         };
+//         total_cardinality += cardinality;
+//         total_penalty += penalty;
+//         cardinality = 0;
+//         penalty = 0;
+//     }
+//     println!("total_cardinality={}", total_cardinality);
+//     (total_cardinality, total_penalty) 
+// }
+
+fn get_class_costs(class1: &EClass<PlanLanguage, Data>, class2: &EClass<PlanLanguage, Data>) -> (usize, usize) {
+    let mut is_join1 = false;
+    for n in class1.nodes.iter() {
+        match n  {
+            PlanLanguage::MergeJoin([_table1_id, _table2_id]) => is_join1 = true,
+            PlanLanguage::HashJoin([_table1_id, _table2_id]) => is_join1 = true,
+            PlanLanguage::NestedLoopsJoin([_table1_id, _table2_id]) => is_join1 = true,
+            _ => { }
+        }
+    }
+    let mut is_join2 = false;
+    for n in class2.nodes.iter() {
+        match n  {
+            PlanLanguage::MergeJoin([_table1_id, _table2_id]) => is_join2 = true,
+            PlanLanguage::HashJoin([_table1_id, _table2_id]) => is_join2 = true,
+            PlanLanguage::NestedLoopsJoin([_table1_id, _table2_id]) => is_join2 = true,
+            _ => { }
+        }
+    }
+
+    let mut class1_card = 0;
+    let mut class1_penalty = 0;
+    let mut class2_card = 0;
+    let mut class2_penalty = 0;
+
+    if is_join1 {
+        class1_card = class1.data.cardinality;
+        class1_penalty = class1.data.penalty;
+    }
+
+    if is_join2 {
+        class2_card = class2.data.cardinality;
+        class2_penalty = class2.data.penalty;
+    }
+
+    (cmp::max(class1_card, class2_card), cmp::max(class1_penalty, class2_penalty))
+}
+
+fn compute_expression_cost(egraph: &EPlanGraph, exp :&RecExpr<PlanLanguage>) -> (usize, usize) {
+    let mut cardinality: usize = 0;
+    let mut penalty: usize = 0;
+    let mut total_cardinality: usize = 0;
+    let mut total_penalty: usize = 0;
+    let mut _index: Option<String> = None;   
+    // need to update egg to make nodes public for this code to build
+    for enode in exp.nodes.iter() {
+        match enode {         
+            PlanLanguage::Select([table1_id]) => {
+                let class1 = &egraph[*table1_id];
+                (cardinality, penalty) = (class1.data.cardinality, class1.data.penalty);
+            },
+            PlanLanguage::MergeJoin([table1_id, table2_id]) => {
+                let class1 = &egraph[*table1_id];
+                let class2 = &egraph[*table2_id];
+                (cardinality, penalty) = get_class_costs(class1, class2);       
+            },
+            PlanLanguage::HashJoin([table1_id, table2_id]) => {
+                let class1 = &egraph[*table1_id];
+                let class2 = &egraph[*table2_id];
+                (cardinality, penalty) = get_class_costs(class1, class2);
+            },            
+            PlanLanguage::NestedLoopsJoin([table1_id, table2_id]) => {
+                let class1 = &egraph[*table1_id];
+                let class2 = &egraph[*table2_id];
+                (cardinality, penalty) = get_class_costs(class1, class2);
+            },
+            _ => { }
+        };
+        total_cardinality += cardinality;
+        total_penalty += penalty;
+        cardinality = 0;
+        penalty = 0;
+    }
+    (total_cardinality, total_penalty) 
+}
+
 // entry point into the plan rewriter application
 fn main() {
     // print the application header
@@ -338,7 +475,7 @@ fn main() {
     
     // deserialize the input JSON
     let input_metadata = serde_json::from_str::<InputMetadata>(&file_contents).unwrap();
-    println!("{:#?}", input_metadata);
+    //println!("{:#?}", input_metadata);
 
     unsafe {
         // store the metadata input global variable to access it later
@@ -352,53 +489,69 @@ fn main() {
     let exp :RecExpr<PlanLanguage> = input_expression.trim().parse().unwrap();
     let runner: EPlanRunner = make_runner(&exp);
 
+    // print the input and output expression
+    let (org_card, org_penalty) = compute_expression_cost(&runner.egraph, &exp);
+    println!("org_card={}", org_card);
+    println!("org_penalty={}", org_penalty);
+    println!("input    {}", exp);
+
     // extract the best query plan expression using the cost function
     let root = runner.roots[0];
     let cost_func = PlanCostFunction { egraph: &runner.egraph  };
     let best = Extractor::new(&runner.egraph, cost_func).find_best(root).1;
-   
-    // print the input and output expression
-    println!("input   [{}] {}", exp.as_ref().len(), exp);
-    println!("normal  [{}] {}", best.as_ref().len(), best);
+
+    let runner: EPlanRunner = make_runner(&best);
+    let (best_card, best_penalty) = compute_expression_cost(&runner.egraph, &best);
+    println!("best_card={}", best_card);
+    println!("best_penalty={}", best_penalty);    
+    println!("normal   {}", best);
 }
 
-// verify a basic join operation rewrite
-#[test]
-fn test_join_operation_rewrites() {
-    let input_metadata_json = r#"{
-        "expression": "(mergeJoin (scan tbl1) (scan tbl2))",
-        "tables": [ 
-            {
-                "name": "tbl1",
-                "cardinality": 3,
-                "rows": 1000,
-                "index": "primary"
-            },
-            {
-                "name": "tbl2",
-                "cardinality": 20,
-                "rows": 21,
-                "index": "foreign"
-            }
-        ]
-    }"#;
 
-    let input_metadata = serde_json::from_str::<InputMetadata>(&input_metadata_json).unwrap();
-    unsafe {
-        // store the metadata input global variable to access it later
-        GLOBAL_METADATA = Some(input_metadata.clone());
-    }
 
-    let input_expression = input_metadata.expression.to_string();
-    let exp :RecExpr<PlanLanguage> = input_expression.trim().parse().unwrap();
-    let runner: EPlanRunner = make_runner(&exp);
-    assert!(matches!(runner.stop_reason, Some(StopReason::Saturated)));
 
-    let root = runner.roots[0];
-    let cost_func = PlanCostFunction { egraph: &runner.egraph };
-    let best = Extractor::new(&runner.egraph, cost_func).find_best(root).1;
+
+
+
+
+
+// // verify a basic join operation rewrite
+// #[test]
+// fn test_join_operation_rewrites() {
+//     let input_metadata_json = r#"{
+//         "expression": "(mergeJoin (scan tbl1) (scan tbl2))",
+//         "tables": [ 
+//             {
+//                 "name": "tbl1",
+//                 "cardinality": 3,
+//                 "rows": 1000,
+//                 "index": "primary"
+//             },
+//             {
+//                 "name": "tbl2",
+//                 "cardinality": 20,
+//                 "rows": 21,
+//                 "index": "foreign"
+//             }
+//         ]
+//     }"#;
+
+//     let input_metadata = serde_json::from_str::<InputMetadata>(&input_metadata_json).unwrap();
+//     unsafe {
+//         // store the metadata input global variable to access it later
+//         GLOBAL_METADATA = Some(input_metadata.clone());
+//     }
+
+//     let input_expression = input_metadata.expression.to_string();
+//     let exp :RecExpr<PlanLanguage> = input_expression.trim().parse().unwrap();
+//     let runner: EPlanRunner = make_runner(&exp);
+//     assert!(matches!(runner.stop_reason, Some(StopReason::Saturated)));
+
+//     let root = runner.roots[0];
+//     let cost_func = PlanCostFunction { egraph: &runner.egraph };
+//     let best = Extractor::new(&runner.egraph, cost_func).find_best(root).1;
    
-    // print the input and output expression
-    println!("input   [{}] {}", exp.as_ref().len(), exp);
-    println!("output  [{}] {}", best.as_ref().len(), best);
-}
+//     // print the input and output expression
+//     println!("input   [{}] {}", exp.as_ref().len(), exp);
+//     println!("output  [{}] {}", best.as_ref().len(), best);
+// }
