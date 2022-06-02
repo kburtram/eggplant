@@ -6,6 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+# need to link to local egg with EClass nodes field public
+# egg = { path = "../egg" }
 egg = "0.8.1"
 ordered-float = "1.1.1"
 fxhash = "0.2"
